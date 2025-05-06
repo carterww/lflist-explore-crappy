@@ -22,6 +22,14 @@ C_FLAGS = -std=c99 -pthread -O2 -fPIC -Werror -Wall -Wextra -Wpedantic -Wno-unus
 LD_FLAGS = -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,separate-code \
 	   -Wl,-rpath /usr/local/lib
 
+LOCK_TARGET = lock
+LOCK_SRCS = lock.c
+LOCK_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
+
+HARRIS_TARGET = harris
+HARRIS_SRCS = harris.c
+HARRIS_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
+
 ZHANG_TARGET = zhang
 ZHANG_SRCS = zhang.c
 ZHANG_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
@@ -32,11 +40,21 @@ ZHANG2_OBJS = $(patsubst %.c, build/%.o, $(ZHANG2_SRCS))
 
 LIBS = -L/usr/local/lib -l:libck.so -l:libpf.so
 
-all: zhang2
+all: lock harris zhang zhang2
+
+lock: $(BIN_DIR)/$(LOCK_TARGET)
+
+harris: $(BIN_DIR)/$(HARRIS_TARGET)
 
 zhang: $(BIN_DIR)/$(ZHANG_TARGET)
 
 zhang2: $(BIN_DIR)/$(ZHANG2_TARGET)
+
+$(BIN_DIR)/$(LOCK_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(LOCK_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(LOCK_OBJS) $(LIBS) -o $@
+
+$(BIN_DIR)/$(HARRIS_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(HARRIS_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(HARRIS_OBJS) $(LIBS) -o $@
 
 $(BIN_DIR)/$(ZHANG_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(ZHANG_OBJS)
 	$(CC) $(C_FLAGS) $(LD_FLAGS) $(ZHANG_OBJS) $(LIBS) -o $@
@@ -53,4 +71,4 @@ $(BUILD_DIR) $(BIN_DIR):
 clean:
 	@rm -rf bin build
 
-.PHONY: all zhang zhang2 clean
+.PHONY: all lock harris zhang zhang2 clean

@@ -16,6 +16,7 @@
 
 /* 8 threads 16,000 inserts, 16,000 deletions per thread
  * V1: Directly from paper ~19-25ms
+ * V2: Don't check for duplicates ~12-13ms
  */
 
 struct lflist_head {
@@ -110,7 +111,7 @@ inline static bool del_help(struct lflist_head *head,
 	curr = ck_pr_load_ptr(&prev->next);
 
 	while (curr != head) {
-		s = ck_pr_load_int((int *)&curr->s);
+		s = ck_pr_load_int(&curr->s);
 
 		if (s == S_INV) {
 			struct lflist_head *succ;
@@ -123,9 +124,9 @@ inline static bool del_help(struct lflist_head *head,
 		} else if (s == S_REM) {
 			return false;
 		} else if (s == S_INS) {
-			return ck_pr_cas_int((int *)&curr->s, S_INS, S_REM);
+			return ck_pr_cas_int(&curr->s, S_INS, S_REM);
 		} else if (s == S_DAT) {
-			ck_pr_fas_int((int *)&curr->s, S_INV);
+			ck_pr_fas_int(&curr->s, S_INV);
 			return true;
 		}
 	}
@@ -136,16 +137,19 @@ inline static bool del_help(struct lflist_head *head,
 inline static bool insert(struct lflist_head *restrict head,
 			  struct lflist_head *restrict new)
 {
-	bool b;
+	bool b = true;
 
 	new->s = S_INS;
 	enlist(head, new);
 
-	b = insert_help(head, new);
+	// This is only necessary if we need to ensure that the list
+	// doesn't have duplicate keys. We use the pointer to the
+	// node as a key.
+	// b = insert_help(head, new);
 
-	if (!ck_pr_cas_int((int *)&new->s, S_INS, b ? S_DAT : S_INV)) {
+	if (!ck_pr_cas_int(&new->s, S_INS, b ? S_DAT : S_INV)) {
 		del_help(head, new, new);
-		ck_pr_fas_int((int *)&new->s, S_INV);
+		ck_pr_fas_int(&new->s, S_INV);
 	}
 	return b;
 }
@@ -160,7 +164,7 @@ inline static bool del(struct lflist_head *restrict head,
 	enlist(head, dummy);
 
 	b = del_help(head, target, dummy);
-	ck_pr_fas_int((int *)&dummy->s, S_INV);
+	ck_pr_fas_int(&dummy->s, S_INV);
 
 	return b;
 }

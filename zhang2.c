@@ -16,11 +16,11 @@
 
 /* 8 threads 16,000 inserts, 16,000 deletions per thread
  * V1: Directly from paper ~19-25ms
+ * V2: State kept in 2 lower pointer bits ~17-23ms
  */
 
 struct lflist_head {
 	struct lflist_head *next;
-	int s;
 };
 typedef struct lflist_head lflist_head_t;
 
@@ -35,13 +35,15 @@ struct integer_entry {
  * INS: Data in the insert stage
  * REM: Data being removed
  */
-#define STATE_DAT ((uintptr_t)0x00)
-#define STATE_INV ((uintptr_t)0x01)
-#define STATE_INS ((uintptr_t)0x10)
-#define STATE_REM ((uintptr_t)0x11)
+#define STATE_DAT ((uintptr_t)0)
+#define STATE_INV ((uintptr_t)1)
+#define STATE_INS ((uintptr_t)2)
+#define STATE_REM ((uintptr_t)3)
 
 #define PTR_IN_STATE(ptr, state) ((void *)(((uintptr_t)(ptr)) & state))
-#define PTR_SET_STATE(ptr, state) ((void *)(((uintptr_t)(ptr)) | state))
+#define PTR_SET_STATE(ptr, state) \
+	((void *)((((uintptr_t)(ptr)) & ~((uintptr_t)3)) | state))
+#define PTR_GET_STATE(ptr) ((uintptr_t)ptr & (uintptr_t)3)
 
 #define PTR_DAT(ptr) PTR_IN_STATE(ptr, STATE_DAT)
 #define PTR_INV(ptr) PTR_IN_STATE(ptr, STATE_INV)
@@ -59,12 +61,24 @@ struct integer_entry {
 	((entry_type *)((uintptr_t)(lflist_head_ptr) -                      \
 			offsetof(entry_type, entry_lflist_head_member)))
 
-inline static void enlist(struct lflist_head *head, struct lflist_head *new)
+inline static void enlist_ins(struct lflist_head *head, struct lflist_head *new)
 {
 	struct lflist_head *old;
 	old = ck_pr_load_ptr(&head->next);
 	while (1) {
-		new->next = old;
+		new->next = PTR_SET_INS(old);
+		if (ck_pr_cas_ptr_value(&head->next, old, new, &old)) {
+			break;
+		}
+	}
+}
+
+inline static void enlist_del(struct lflist_head *head, struct lflist_head *new)
+{
+	struct lflist_head *old;
+	old = ck_pr_load_ptr(&head->next);
+	while (1) {
+		new->next = PTR_SET_REM(old);
 		if (ck_pr_cas_ptr_value(&head->next, old, new, &old)) {
 			break;
 		}
@@ -74,22 +88,25 @@ inline static void enlist(struct lflist_head *head, struct lflist_head *new)
 inline static bool insert_help(struct lflist_head *head,
 			       struct lflist_head *new)
 {
-	struct lflist_head *prev, *curr;
-	int s;
-	prev = new;
-	curr = ck_pr_load_ptr(&prev->next);
+	struct lflist_head *prev, *curr, *next;
+	void *curr_raw;
+	uintptr_t s;
+	prev = PTR_SET_DAT(new);
+	curr_raw = ck_pr_load_ptr(&prev->next);
+	curr = PTR_SET_DAT(curr_raw);
 
 	while (curr != head) {
-		s = ck_pr_load_int(&curr->s);
+		next = ck_pr_load_ptr(&curr->next);
+		s = PTR_GET_STATE(next);
 
 		if (s == S_INV) {
-			struct lflist_head *succ;
-			succ = ck_pr_load_ptr(&curr->next);
-			ck_pr_fas_ptr(&prev->next, succ);
-			curr = succ;
+			ck_pr_fas_ptr(&prev->next, next);
+			curr_raw = next;
+			curr = PTR_SET_DAT(curr_raw);
 		} else if (curr != new) {
 			prev = curr;
-			curr = ck_pr_load_ptr(&curr->next);
+			curr_raw = ck_pr_load_ptr(&curr->next);
+			curr = PTR_SET_DAT(curr_raw);
 		} else if (s == S_REM) {
 			return true;
 		} else if (s == S_INS || s == S_DAT) {
@@ -104,28 +121,31 @@ inline static bool del_help(struct lflist_head *head,
 			    struct lflist_head *target,
 			    struct lflist_head *dummy)
 {
-	struct lflist_head *prev, *curr;
-	int s;
-	prev = dummy;
-	curr = ck_pr_load_ptr(&prev->next);
+	struct lflist_head *prev, *curr, *next;
+	void *curr_raw;
+	uintptr_t s;
+	prev = PTR_SET_DAT(dummy);
+	curr_raw = ck_pr_load_ptr(&prev->next);
+	curr = PTR_SET_DAT(curr_raw);
 
 	while (curr != head) {
-		s = ck_pr_load_int(&curr->s);
+		next = ck_pr_load_ptr(&curr->next);
+		s = PTR_GET_STATE(next);
 
 		if (s == S_INV) {
-			struct lflist_head *succ;
-			succ = ck_pr_load_ptr(&curr->next);
-			ck_pr_fas_ptr(&prev->next, succ);
-			curr = succ;
+			ck_pr_fas_ptr(&prev->next, next);
+			curr_raw = next;
+			curr = PTR_SET_DAT(curr_raw);
 		} else if (curr != target) {
 			prev = curr;
-			curr = ck_pr_load_ptr(&curr->next);
+			curr_raw = ck_pr_load_ptr(&curr->next);
+			curr = PTR_SET_DAT(curr_raw);
 		} else if (s == S_REM) {
 			return false;
 		} else if (s == S_INS) {
-			return ck_pr_cas_int(&curr->s, S_INS, S_REM);
+			return ck_pr_cas_ptr(&curr->next, next, PTR_SET_REM(next));
 		} else if (s == S_DAT) {
-			ck_pr_fas_int(&curr->s, S_INV);
+			ck_pr_fas_ptr(&curr->next, PTR_SET_INV(next));
 			return true;
 		}
 	}
@@ -137,15 +157,19 @@ inline static bool insert(struct lflist_head *restrict head,
 			  struct lflist_head *restrict new)
 {
 	bool b = true;
+	struct lflist_head *new_orig = PTR_SET_DAT(new);
+	void *ins_state_ptr;
+	void *new_state_ptr;
 
-	new->s = S_INS;
-	enlist(head, new);
+	enlist_ins(head, new);
+	ins_state_ptr = PTR_SET_INS(new_orig->next);
 
 	b = insert_help(head, new);
 
-	if (!ck_pr_cas_int(&new->s, S_INS, b ? S_DAT : S_INV)) {
+	new_state_ptr = b ? PTR_SET_DAT(new_orig->next) : PTR_SET_INV(new_orig->next);
+	if (!ck_pr_cas_ptr(&new_orig->next, ins_state_ptr, new_state_ptr)) {
 		del_help(head, new, new);
-		ck_pr_fas_int(&new->s, S_INV);
+		ck_pr_fas_ptr(&new_orig->next, PTR_SET_INV(new_orig->next));
 	}
 	return b;
 }
@@ -155,28 +179,32 @@ inline static bool del(struct lflist_head *restrict head,
 		       struct lflist_head *restrict dummy)
 {
 	bool b;
+	struct lflist_head *dummy_orig = PTR_SET_DAT(dummy);
 
-	dummy->s = S_REM;
-	enlist(head, dummy);
+	enlist_del(head, dummy);
 
 	b = del_help(head, target, dummy);
-	ck_pr_fas_int(&dummy->s, S_INV);
+	ck_pr_fas_ptr(&dummy_orig->next, PTR_SET_INV(dummy_orig->next));
 
 	return b;
 }
 
 static void _integer_list_print(struct lflist_head *head)
 {
-	struct lflist_head *prev = head;
-	struct lflist_head *curr = ck_pr_load_ptr(&head->next);
+	void *curr_raw = ck_pr_load_ptr(&head->next);
+	struct lflist_head *curr = PTR_SET_DAT(curr_raw);
+	struct lflist_head *next;
 	int i = 1;
 
 	printf("[0]: %p\n", head);
 	while (curr != head) {
 		struct integer_entry *e;
+		next = ck_pr_load_ptr(&curr->next);
+		int s = PTR_GET_STATE(next);
 
-		if (curr->s == S_INV || curr->s == S_REM) {
-			curr = ck_pr_load_ptr(&curr->next);
+		if (s == S_INV || s == S_REM) {
+			curr_raw = ck_pr_load_ptr(&curr->next);
+			curr = PTR_SET_DAT(curr_raw);
 			continue;
 		}
 
@@ -184,7 +212,8 @@ static void _integer_list_print(struct lflist_head *head)
 
 		printf("[%d]: %p -> %d\n", i, curr, e->x);
 
-		curr = ck_pr_load_ptr(&curr->next);
+		curr_raw = ck_pr_load_ptr(&curr->next);
+		curr = PTR_SET_DAT(curr_raw);
 		i += 1;
 	}
 }

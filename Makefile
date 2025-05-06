@@ -22,15 +22,27 @@ C_FLAGS = -std=c99 -pthread -O2 -fPIC -Werror -Wall -Wextra -Wpedantic -Wno-unus
 LD_FLAGS = -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,separate-code \
 	   -Wl,-rpath /usr/local/lib
 
-TARGET = lflist
-SRCS = zhang.c
-OBJS = $(patsubst %.c, build/%.o, $(SRCS))
+ZHANG_TARGET = zhang
+ZHANG_SRCS = zhang.c
+ZHANG_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
+
+ZHANG2_TARGET = zhang2
+ZHANG2_SRCS = zhang2.c
+ZHANG2_OBJS = $(patsubst %.c, build/%.o, $(ZHANG2_SRCS))
+
 LIBS = -L/usr/local/lib -l:libck.so -l:libpf.so
 
-all: $(BIN_DIR)/$(TARGET)
+all: zhang2
 
-$(BIN_DIR)/$(TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(OBJS)
-	$(CC) $(C_FLAGS) $(LD_FLAGS) $(OBJS) $(LIBS) -o $@
+zhang: $(BIN_DIR)/$(ZHANG_TARGET)
+
+zhang2: $(BIN_DIR)/$(ZHANG2_TARGET)
+
+$(BIN_DIR)/$(ZHANG_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(ZHANG_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(ZHANG_OBJS) $(LIBS) -o $@
+
+$(BIN_DIR)/$(ZHANG2_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(ZHANG2_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(ZHANG2_OBJS) $(LIBS) -o $@
 
 $(BUILD_DIR)/%.o: %.c $(BUILD_DIR)
 	$(CC) $(C_FLAGS) -c $< -o $@
@@ -41,4 +53,4 @@ $(BUILD_DIR) $(BIN_DIR):
 clean:
 	@rm -rf bin build
 
-.PHONY: all clean
+.PHONY: all zhang zhang2 clean

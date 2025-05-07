@@ -3,7 +3,7 @@ BUILD_DIR = build
 BIN_DIR = bin
 INLCUDE = -I/usr/local/include
 
-C_FLAGS = -std=c99 -pthread -O2 -fPIC -Werror -Wall -Wextra -Wpedantic -Wno-unused -Wfloat-equal \
+C_FLAGS = -std=c99 -pthread -O2 -g -fPIC -Werror -Wall -Wextra -Wpedantic -Wno-unused -Wfloat-equal \
 	  -Wdouble-promotion -Wformat=2 -Wformat-security -Wstack-protector \
 	  -Walloca -Wvla -Wcast-qual -Wconversion -Wformat-signedness -Wshadow \
 	  -Wstrict-overflow=4 -Wundef -Wstrict-prototypes -Wswitch-default \
@@ -24,11 +24,15 @@ LD_FLAGS = -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,separate-code \
 
 LOCK_TARGET = lock
 LOCK_SRCS = lock.c
-LOCK_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
+LOCK_OBJS = $(patsubst %.c, build/%.o, $(LOCK_SRCS))
 
 HARRIS_TARGET = harris
 HARRIS_SRCS = harris.c
-HARRIS_OBJS = $(patsubst %.c, build/%.o, $(ZHANG_SRCS))
+HARRIS_OBJS = $(patsubst %.c, build/%.o, $(HARRIS_SRCS))
+
+MICHAEL_TARGET = michael
+MICHAEL_SRCS = michael.c
+MICHAEL_OBJS = $(patsubst %.c, build/%.o, $(MICHAEL_SRCS))
 
 ZHANG_TARGET = zhang
 ZHANG_SRCS = zhang.c
@@ -40,11 +44,13 @@ ZHANG2_OBJS = $(patsubst %.c, build/%.o, $(ZHANG2_SRCS))
 
 LIBS = -L/usr/local/lib -l:libck.so -l:libpf.so
 
-all: lock harris zhang zhang2
+all: lock harris michael zhang zhang2
 
 lock: $(BIN_DIR)/$(LOCK_TARGET)
 
 harris: $(BIN_DIR)/$(HARRIS_TARGET)
+
+michael: $(BIN_DIR)/$(MICHAEL_TARGET)
 
 zhang: $(BIN_DIR)/$(ZHANG_TARGET)
 
@@ -55,6 +61,9 @@ $(BIN_DIR)/$(LOCK_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(LOCK_OBJS)
 
 $(BIN_DIR)/$(HARRIS_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(HARRIS_OBJS)
 	$(CC) $(C_FLAGS) $(LD_FLAGS) $(HARRIS_OBJS) $(LIBS) -o $@
+
+$(BIN_DIR)/$(MICHAEL_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(MICHAEL_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(MICHAEL_OBJS) $(LIBS) -o $@
 
 $(BIN_DIR)/$(ZHANG_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(ZHANG_OBJS)
 	$(CC) $(C_FLAGS) $(LD_FLAGS) $(ZHANG_OBJS) $(LIBS) -o $@
@@ -71,4 +80,4 @@ $(BUILD_DIR) $(BIN_DIR):
 clean:
 	@rm -rf bin build
 
-.PHONY: all lock harris zhang zhang2 clean
+.PHONY: all lock harris michael zhang zhang2 clean

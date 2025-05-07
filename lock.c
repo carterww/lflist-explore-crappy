@@ -38,7 +38,6 @@ inline static void insert(struct lflist_head *restrict head,
 inline static bool del(struct lflist_head *restrict head,
 		       struct lflist_head *restrict target)
 {
-	bool b = false;
 	pthread_mutex_lock(&lock);
 	struct lflist_head *prev = head;
 	struct lflist_head *curr = head->next;
@@ -46,14 +45,14 @@ inline static bool del(struct lflist_head *restrict head,
 		if (curr != target) {
 			prev = curr;
 			curr = curr->next;
+			continue;
 		}
-		struct lflist_head *next = prev->next;
-		prev->next = target->next;
+		prev->next = curr->next;
 		pthread_mutex_unlock(&lock);
 		return true;
 	}
 	pthread_mutex_unlock(&lock);
-	return b;
+	return false;
 }
 
 static void _integer_list_print(struct lflist_head *head)

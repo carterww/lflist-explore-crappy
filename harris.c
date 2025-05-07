@@ -13,17 +13,39 @@ struct lflist_head {
 	struct lflist_head *next;
 };
 typedef struct lflist_head lflist_head_t;
+typedef void lflist_head_unsafe_t;
 
 struct integer_entry {
 	lflist_head_t integers;
 	int x;
 };
 
-#define MARK_PTR(ptr) ((void *)(((uintptr_t)(ptr)) | (uintptr_t)0x1))
-#define UNMARK_PTR(ptr) ((void *)(((uintptr_t)(ptr)) & ~(uintptr_t)0x1))
-#define IS_MARKED_PTR(ptr) ((void *)(((uintptr_t)(ptr)) & (uintptr_t)0x1))
+#define PTR_MARK ((uintptr_t)1)
 
-#define LFLIST_END(head_ptr, curr_ptr) (head_ptr == curr_ptr)
+inline static bool is_marked(void *ptr)
+{
+	uintptr_t uptr = (uintptr_t)ptr;
+	return uptr & PTR_MARK;
+}
+
+inline static bool is_unmarked(void *ptr)
+{
+	return !is_marked(ptr);
+}
+
+inline static lflist_head_unsafe_t *mark(void *ptr)
+{
+	uintptr_t uptr = (uintptr_t)ptr;
+	return (lflist_head_unsafe_t *)(uptr | PTR_MARK);
+}
+
+inline static lflist_head_t *unmark(void *ptr)
+{
+	uintptr_t uptr = (uintptr_t)ptr;
+	return (lflist_head_t *)(uptr & ~PTR_MARK);
+}
+
+#define LFLIST_END(head_ptr, curr_ptr) (head_ptr == unmark(curr_ptr))
 
 #define lflist_entry(lflist_head_ptr, entry_type, entry_lflist_head_member) \
 	((entry_type *)((uintptr_t)(lflist_head_ptr) -                      \
@@ -55,32 +77,31 @@ inline static bool lflist_del_harris(struct lflist_head *restrict head,
 	curr = ck_pr_load_ptr(&head->next);
 
 	while (!LFLIST_END(head, curr)) {
-		if (IS_MARKED_PTR(curr)) {
+		if (is_marked(curr)) {
 			prev = head;
-			curr = ck_pr_load_ptr(&head->next);
+			curr = head->next;
 			continue;
 		}
 		if (curr == target) {
 			struct lflist_head *next = ck_pr_load_ptr(&curr->next);
-			while (!IS_MARKED_PTR(next)) {
+			while (is_unmarked(next)) {
 				if (ck_pr_cas_ptr(&curr->next, next,
-						  MARK_PTR(next)))
+						  mark(next)))
 					break;
 				next = ck_pr_load_ptr(&curr->next);
 			}
 
-			if (ck_pr_cas_ptr(&prev->next, curr,
-					  UNMARK_PTR(next))) {
+			if (ck_pr_cas_ptr(&prev->next, curr, unmark(next))) {
 				return true;
 			} else {
 				prev = head;
-				curr = ck_pr_load_ptr(&head->next);
+				curr = head->next;
 				continue;
 			}
 		}
 
 		prev = curr;
-		curr = ck_pr_load_ptr(&curr->next);
+		curr = curr->next;
 	}
 
 	return false;
@@ -96,14 +117,19 @@ inline static bool lflist_empty(struct lflist_head *head)
 static void _integer_list_print(struct lflist_head *head)
 {
 	void *curr_raw = ck_pr_load_ptr(&head->next);
-	struct lflist_head *curr = UNMARK_PTR(curr_raw);
+	struct lflist_head *curr = unmark(curr_raw);
 	int i = 1;
 
 	printf("[0]: %p\n", head);
-	while (!LFLIST_END(head, UNMARK_PTR(curr_raw))) {
+	while (!LFLIST_END(head, curr_raw)) {
 		struct integer_entry *e;
 
-		curr = UNMARK_PTR(curr_raw);
+		curr = unmark(curr_raw);
+
+		if (is_marked(curr_raw)) {
+			curr_raw = curr->next;
+			continue;
+		}
 		e = lflist_entry(curr, struct integer_entry, integers);
 
 		printf("[%d]: %p -> %d\n", i, curr, e->x);

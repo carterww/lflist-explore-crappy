@@ -9,6 +9,12 @@
 
 #include <pf_hw_timer.h>
 
+/* Pointer tags to represent 4 states:
+ * DAT: Valid data
+ * INV: Invalid data
+ * INS: Data in the insert stage
+ * REM: Data being removed
+ */
 #define S_DAT (0)
 #define S_INV (1)
 #define S_INS (2)
@@ -28,30 +34,6 @@ struct integer_entry {
 	lflist_head_t integers;
 	int x;
 };
-
-/* Pointer tags to represent 4 states:
- * DAT: Valid data
- * INV: Invalid data
- * INS: Data in the insert stage
- * REM: Data being removed
- */
-#define STATE_DAT ((uintptr_t)0x00)
-#define STATE_INV ((uintptr_t)0x01)
-#define STATE_INS ((uintptr_t)0x10)
-#define STATE_REM ((uintptr_t)0x11)
-
-#define PTR_IN_STATE(ptr, state) ((void *)(((uintptr_t)(ptr)) & state))
-#define PTR_SET_STATE(ptr, state) ((void *)(((uintptr_t)(ptr)) | state))
-
-#define PTR_DAT(ptr) PTR_IN_STATE(ptr, STATE_DAT)
-#define PTR_INV(ptr) PTR_IN_STATE(ptr, STATE_INV)
-#define PTR_INS(ptr) PTR_IN_STATE(ptr, STATE_INS)
-#define PTR_REM(ptr) PTR_IN_STATE(ptr, STATE_REM)
-
-#define PTR_SET_DAT(ptr) PTR_SET_STATE(ptr, STATE_DAT)
-#define PTR_SET_INV(ptr) PTR_SET_STATE(ptr, STATE_INV)
-#define PTR_SET_INS(ptr) PTR_SET_STATE(ptr, STATE_INS)
-#define PTR_SET_REM(ptr) PTR_SET_STATE(ptr, STATE_REM)
 
 #define LFLIST_END(head_ptr, curr_ptr) (head_ptr == curr_ptr)
 

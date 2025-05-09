@@ -22,6 +22,10 @@ C_FLAGS = -std=c99 -pthread -O2 -g -fPIC -Werror -Wall -Wextra -Wpedantic -Wno-u
 LD_FLAGS = -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,separate-code \
 	   -Wl,-rpath /usr/local/lib
 
+BENCH_TARGET = bench
+BENCH_SRCS = bench.c lock.c zhang.c
+BENCH_OBJS = $(patsubst %.c,build/%.o,$(BENCH_SRCS))
+
 LOCK_TARGET = lock
 LOCK_SRCS = lock.c
 LOCK_OBJS = $(patsubst %.c, build/%.o, $(LOCK_SRCS))
@@ -44,7 +48,9 @@ ZHANG2_OBJS = $(patsubst %.c, build/%.o, $(ZHANG2_SRCS))
 
 LIBS = -L/usr/local/lib -l:libck.so -l:libpf.so
 
-all: lock harris michael zhang zhang2
+all: bench
+
+bench: $(BIN_DIR)/$(BENCH_TARGET)
 
 lock: $(BIN_DIR)/$(LOCK_TARGET)
 
@@ -55,6 +61,9 @@ michael: $(BIN_DIR)/$(MICHAEL_TARGET)
 zhang: $(BIN_DIR)/$(ZHANG_TARGET)
 
 zhang2: $(BIN_DIR)/$(ZHANG2_TARGET)
+
+$(BIN_DIR)/$(BENCH_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(BENCH_OBJS)
+	$(CC) $(C_FLAGS) $(LD_FLAGS) $(BENCH_OBJS) $(LIBS) -o $@
 
 $(BIN_DIR)/$(LOCK_TARGET): /usr/local/lib/libck.so $(BIN_DIR) $(LOCK_OBJS)
 	$(CC) $(C_FLAGS) $(LD_FLAGS) $(LOCK_OBJS) $(LIBS) -o $@
@@ -80,4 +89,4 @@ $(BUILD_DIR) $(BIN_DIR):
 clean:
 	@rm -rf bin build
 
-.PHONY: all lock harris michael zhang zhang2 clean
+.PHONY: all bench lock harris michael zhang zhang2 clean

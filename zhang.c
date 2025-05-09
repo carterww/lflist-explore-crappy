@@ -10,40 +10,60 @@
 #include <pf_hw_timer.h>
 
 /* Pointer tags to represent 4 states:
- * DAT: Valid data
  * INV: Invalid data
+ * DAT: Valid data
  * INS: Data in the insert stage
  * REM: Data being removed
  */
-#define S_DAT (0)
-#define S_INV (1)
+#define S_INV (0)
+#define S_DAT (1)
 #define S_INS (2)
 #define S_REM (3)
 
-/* 8 threads 16,000 inserts, 16,000 deletions per thread
- * V1: Directly from paper ~19-25ms
- */
-
-struct lflist_head {
-	struct lflist_head *next;
-	int s;
-};
-typedef struct lflist_head lflist_head_t;
-
-struct integer_entry {
-	lflist_head_t integers;
-	int x;
-};
+#include "bench.h"
+#include "lf.h"
 
 #define LFLIST_END(head_ptr, curr_ptr) (head_ptr == curr_ptr)
 
-#define lflist_entry(lflist_head_ptr, entry_type, entry_lflist_head_member) \
-	((entry_type *)((uintptr_t)(lflist_head_ptr) -                      \
-			offsetof(entry_type, entry_lflist_head_member)))
+#define S_SET(uptr, s) ((uptr & ~(uintptr_t)3) | (uintptr_t)s)
 
-inline static void enlist(struct lflist_head *head, struct lflist_head *new)
+inline static int lfhead_state_get(lfhead_t *head)
 {
-	struct lflist_head *old;
+	lfhead_t *next_ret = ck_pr_load_ptr(&head->next_ret);
+	int s = (int)((uintptr_t)next_ret & (uintptr_t)3);
+	return s;
+}
+
+inline static void lfhead_state_set(lfhead_t *head, int new)
+{
+	lfhead_t *next_ret = ck_pr_load_ptr(&head->next_ret);
+	uintptr_t uptr_new = (uintptr_t)next_ret;
+	uptr_new = S_SET(uptr_new, new);
+	ck_pr_store_ptr(&head->next_ret, (void *)uptr_new);
+}
+
+inline static void lfhead_state_fas(lfhead_t *head, int new)
+{
+	lfhead_t *next_ret = ck_pr_load_ptr(&head->next_ret);
+	uintptr_t uptr_new = (uintptr_t)next_ret;
+	uptr_new = S_SET(uptr_new, new);
+	ck_pr_fas_ptr(&head->next_ret, (void *)uptr_new);
+}
+
+inline static bool lfhead_state_cas(lfhead_t *head, int expected, int new)
+{
+	lfhead_t *next_ret = ck_pr_load_ptr(&head->next_ret);
+	uintptr_t uptr_expected = (uintptr_t)next_ret;
+	uintptr_t uptr_new = (uintptr_t)next_ret;
+	uptr_expected = S_SET(uptr_expected, expected);
+	uptr_new = S_SET(uptr_new, new);
+	return ck_pr_cas_ptr(&head->next_ret, (void *)uptr_expected,
+			     (void *)uptr_new);
+}
+
+inline static void enlist(lfhead_t *restrict head, lfhead_t *restrict new)
+{
+	lfhead_t *old;
 	old = ck_pr_load_ptr(&head->next);
 	while (1) {
 		new->next = old;
@@ -53,25 +73,28 @@ inline static void enlist(struct lflist_head *head, struct lflist_head *new)
 	}
 }
 
-inline static bool insert_help(struct lflist_head *head,
-			       struct lflist_head *new)
+inline static bool insert_help(lfhead_t *restrict head, lfhead_t *restrict new,
+			       hp_tls_t *restrict hp)
 {
-	struct lflist_head *prev, *curr;
+	lfhead_t *prev, *curr, *next;
 	int s;
 	prev = new;
-	curr = ck_pr_load_ptr(&prev->next);
+	curr = hp_post(hp, &new->next, HP_CURR);
 
 	while (curr != head) {
-		s = ck_pr_load_int(&curr->s);
+		s = lfhead_state_get(curr);
 
 		if (s == S_INV) {
-			struct lflist_head *succ;
-			succ = ck_pr_load_ptr(&curr->next);
-			ck_pr_fas_ptr(&prev->next, succ);
-			curr = succ;
+			next = hp_post(hp, &curr->next, HP_NEXT);
+			ck_pr_fas_ptr(&prev->next, next);
+			curr = next;
+			hp_inherit(hp, HP_NEXT, HP_CURR);
 		} else if (curr != new) {
 			prev = curr;
-			curr = ck_pr_load_ptr(&curr->next);
+			hp_inherit(hp, HP_CURR, HP_PREV);
+			next = hp_post(hp, &curr->next, HP_NEXT);
+			curr = next;
+			hp_inherit(hp, HP_NEXT, HP_CURR);
 		} else if (s == S_REM) {
 			return true;
 		} else if (s == S_INS || s == S_DAT) {
@@ -82,32 +105,35 @@ inline static bool insert_help(struct lflist_head *head,
 	return true;
 }
 
-inline static bool del_help(struct lflist_head *head,
-			    struct lflist_head *target,
-			    struct lflist_head *dummy)
+inline static bool del_help(lfhead_t *restrict head, lfhead_t *restrict target,
+			    lfhead_t *restrict dummy,
+			    hp_tls_t *restrict hp)
 {
-	struct lflist_head *prev, *curr;
+	lfhead_t *prev, *curr, *next;
 	int s;
 	prev = dummy;
-	curr = ck_pr_load_ptr(&prev->next);
+	curr = hp_post(hp, &dummy->next, HP_CURR);
 
 	while (curr != head) {
-		s = ck_pr_load_int(&curr->s);
+		s = lfhead_state_get(curr);
 
 		if (s == S_INV) {
-			struct lflist_head *succ;
-			succ = ck_pr_load_ptr(&curr->next);
-			ck_pr_fas_ptr(&prev->next, succ);
-			curr = succ;
+			next = hp_post(hp, &curr->next, HP_NEXT);
+			ck_pr_fas_ptr(&prev->next, next);
+			curr = next;
+			hp_inherit(hp, HP_NEXT, HP_CURR);
 		} else if (curr != target) {
 			prev = curr;
-			curr = ck_pr_load_ptr(&curr->next);
+			hp_inherit(hp, HP_CURR, HP_PREV);
+			next = hp_post(hp, &curr->next, HP_NEXT);
+			curr = next;
+			hp_inherit(hp, HP_NEXT, HP_CURR);
 		} else if (s == S_REM) {
 			return false;
 		} else if (s == S_INS) {
-			return ck_pr_cas_int(&curr->s, S_INS, S_REM);
+			return lfhead_state_cas(curr, S_INS, S_REM);
 		} else if (s == S_DAT) {
-			ck_pr_fas_int(&curr->s, S_INV);
+			lfhead_state_fas(curr, S_INV);
 			return true;
 		}
 	}
@@ -115,105 +141,134 @@ inline static bool del_help(struct lflist_head *head,
 	return true;
 }
 
-inline static bool insert(struct lflist_head *restrict head,
-			  struct lflist_head *restrict new)
+inline static bool insert(lfhead_t *restrict head, lfhead_t *restrict new,
+			  hp_tls_t *restrict hp)
 {
 	bool b = true;
-
-	new->s = S_INS;
+	lfhead_state_set(new, S_INS);
+	/* I don't think we need to set new as a hazard pointer due to the
+	 * similar reasons as del with dummy. If we are the only thread that
+	 * can actually mark it S_INV (if the cas fails) then it will never
+	 * be moved to the retire list.
+	 */
 	enlist(head, new);
 
-	b = insert_help(head, new);
+	b = insert_help(head, new, hp);
 
-	if (!ck_pr_cas_int(&new->s, S_INS, b ? S_DAT : S_INV)) {
-		del_help(head, new, new);
-		ck_pr_fas_int(&new->s, S_INV);
+	if (!lfhead_state_cas(new, S_INS, b ? S_DAT : S_INV)) {
+		del_help(head, new, new, hp);
+		lfhead_state_fas(new, S_INV);
 	}
+	hp_clear(hp);
 	return b;
 }
 
-inline static bool del(struct lflist_head *restrict head,
-		       struct lflist_head *restrict target,
-		       struct lflist_head *restrict dummy)
+inline static bool del(lfhead_t *restrict head, lfhead_t *restrict target,
+		       lfhead_t *restrict dummy, lfhead_t *restrict head_ret,
+		       hp_tls_t *restrict hp)
 {
 	bool b;
 
-	dummy->s = S_REM;
+	lfhead_state_set(dummy, S_REM);
+	/* Dummy will be visible in the list after this operation, but I don't think
+	 * we need a hazard pointer for it. The only thread that is allowed to switch
+	 * a node from S_REM to S_INV is the "owner" of that node. If the node cannot
+	 * be logically deleted during the lifetime of this call then it will never
+	 * go on the retire list.
+	 */
 	enlist(head, dummy);
 
-	b = del_help(head, target, dummy);
-	ck_pr_fas_int(&dummy->s, S_INV);
+	b = del_help(head, target, dummy, hp);
+	hp_clear(hp);
+	lfhead_state_fas(dummy, S_INV);
+
+	/* THIS IS NOT CORRECT!!!! ONLY DOING THIS FOR BENCHMARK TO SEE
+	 * WHAT IF
+	 */
+	if (b) {
+		retire_push(head_ret, target);
+		retire_push(head_ret, dummy);
+	}
 
 	return b;
 }
 
-static void _integer_list_print(struct lflist_head *head)
+inline static bool find(lfhead_t *restrict head, lfhead_t *restrict target,
+			hp_tls_t *restrict hp)
 {
-	struct lflist_head *prev = head;
-	struct lflist_head *curr = ck_pr_load_ptr(&head->next);
-	int i = 1;
+	bool result = false;
+	lfhead_t *next, *curr, *prev;
+	int s;
 
-	printf("[0]: %p\n", head);
+	prev = head;
+	curr = hp_post(hp, &head->next, HP_CURR);
+
 	while (curr != head) {
-		struct integer_entry *e;
-
-		if (curr->s == S_INV || curr->s == S_REM) {
-			curr = ck_pr_load_ptr(&curr->next);
-			continue;
+		s = lfhead_state_get(curr);
+		if (curr == target) {
+			result = s != S_INV && s != S_REM;
+			break;
 		}
-
-		e = lflist_entry(curr, struct integer_entry, integers);
-
-		printf("[%d]: %p -> %d\n", i, curr, e->x);
-
-		curr = ck_pr_load_ptr(&curr->next);
-		i += 1;
+		prev = curr;
+		hp_inherit(hp, HP_CURR, HP_PREV);
+		next = hp_post(hp, &curr->next, HP_NEXT);
+		curr = next;
+		hp_inherit(hp, HP_NEXT, HP_CURR);
 	}
+	hp_clear(hp);
+	return result;
 }
 
-static void *pthread_runner(void *arg)
+void *zhang_trfunc(void *varg)
 {
-	struct lflist_head *head = (struct lflist_head *)arg;
-	int i;
+	BENCH_DECOMPOSE_ARGS(varg);
+	insert_phase_foreach(i)
+	{
+		insert(head, &nodes[i], hp_tls);
+	}
+	find_phase_foreach(i)
+	{
+		find(head, &nodes[i], hp_tls);
+	}
+	delete_phase_foreach(i)
+	{
+		del(head, &nodes[i], &dummies[i], head_ret, hp_tls);
+	}
 
-#define LEN (16000)
-	struct integer_entry *es = malloc(sizeof(*es) * LEN);
-	struct lflist_head *dummies = malloc(sizeof(*dummies) * LEN);
-
-	for (i = 0; i < LEN; ++i) {
-		es[i].x = i;
-		insert(head, &es[i].integers);
-		del(head, &es[i].integers, &dummies[i]);
+	all_phase_foreach(i)
+	{
+		insert(head, &nodes[i], hp_tls);
+		find(head, &nodes[i], hp_tls);
+		del(head, &nodes[i], &dummies[i], head_ret, hp_tls);
+	}
+	finish_find_phase_foreach()
+	{
+		find(head, &nodes[rops], hp_tls);
+	}
+	finish_insdel_phase_foreach(i)
+	{
+		insert(head, &nodes[i], hp_tls);
+		del(head, &nodes[i], &dummies[i], head_ret, hp_tls);
 	}
 	pthread_exit(NULL);
-#undef LEN
 }
 
-int main(void)
+void zhang_cleanup(thr_arg_t *arg)
 {
-	lflist_head_t head;
-	head.next = &head;
-	char buf[128];
-#define NTS (8)
-	pthread_t tids[NTS];
+	lfhead_t *prev, *curr, *next;
+	int s;
+	prev = arg->head;
+	curr = ck_pr_load_ptr(&prev->next);
 
-	struct pf_hw_timer timer;
-
-	pf_hw_timer_start(&timer);
-	for (int i = 0; i < NTS; ++i) {
-		pthread_create(&tids[i], NULL, pthread_runner, &head);
+	while (curr != arg->head) {
+		s = lfhead_state_get(curr);
+		if (s == S_INV) {
+			next = ck_pr_load_ptr(&curr->next);
+			ck_pr_fas_ptr(&prev->next, next);
+			curr = next;
+			continue;
+		}
+		prev = curr;
+		curr = ck_pr_load_ptr(&curr->next);
 	}
-
-	for (int i = 0; i < NTS; ++i) {
-		pthread_join(tids[i], NULL);
-	}
-	pf_hw_timer_end(&timer, PF_TSC_FREQ_HZ_INTEL_12700K);
-
-	_integer_list_print(&head);
-
-	pf_timer_pretty_time(&timer.duration, PF_HW_TIMER_US, 2, buf, 128);
-
-	printf("%s\n", buf);
-
-	return 0;
 }

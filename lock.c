@@ -9,113 +9,101 @@
 
 #include <pf_hw_timer.h>
 
-struct lflist_head {
-	struct lflist_head *next;
-};
-typedef struct lflist_head lflist_head_t;
-
-struct integer_entry {
-	lflist_head_t integers;
-	int x;
-};
+#include "bench.h"
+#include "lf.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-#define lflist_entry(lflist_head_ptr, entry_type, entry_lflist_head_member) \
-	((entry_type *)((uintptr_t)(lflist_head_ptr) -                      \
-			offsetof(entry_type, entry_lflist_head_member)))
-
-inline static void insert(struct lflist_head *restrict head,
-			  struct lflist_head *restrict new)
+inline static void insert(lfhead_t *restrict head, lfhead_t *restrict new)
 {
 	pthread_mutex_lock(&lock);
-	struct lflist_head *next = head->next;
+	lfhead_t *next = head->next;
 	new->next = next;
 	head->next = new;
 	pthread_mutex_unlock(&lock);
 }
 
-inline static bool del(struct lflist_head *restrict head,
-		       struct lflist_head *restrict target)
+inline static bool del(lfhead_t *restrict head, lfhead_t *restrict target)
 {
 	pthread_mutex_lock(&lock);
-	struct lflist_head *prev = head;
-	struct lflist_head *curr = head->next;
+	lfhead_t *prev = head;
+	lfhead_t *curr = head->next;
 	while (curr != head) {
-		if (curr != target) {
-			prev = curr;
-			curr = curr->next;
-			continue;
+		if (curr == target) {
+			prev->next = curr->next;
+			pthread_mutex_unlock(&lock);
+			return true;
 		}
-		prev->next = curr->next;
-		pthread_mutex_unlock(&lock);
-		return true;
+		prev = curr;
+		curr = curr->next;
 	}
 	pthread_mutex_unlock(&lock);
 	return false;
 }
 
-static void _integer_list_print(struct lflist_head *head)
+inline static bool find(lfhead_t *restrict head, lfhead_t *restrict target)
 {
-	struct lflist_head *prev = head;
-	struct lflist_head *curr = ck_pr_load_ptr(&head->next);
-	int i = 1;
-
-	printf("[0]: %p\n", head);
+	pthread_mutex_lock(&lock);
+	lfhead_t *prev = head;
+	lfhead_t *curr = head->next;
 	while (curr != head) {
-		struct integer_entry *e;
-
-		e = lflist_entry(curr, struct integer_entry, integers);
-
-		printf("[%d]: %p -> %d\n", i, curr, e->x);
-
-		curr = ck_pr_load_ptr(&curr->next);
-		i += 1;
+		if (curr == target) {
+			pthread_mutex_unlock(&lock);
+			return true;
+		}
+		prev = curr;
+		curr = curr->next;
 	}
+	pthread_mutex_unlock(&lock);
+	return false;
 }
 
-static void *pthread_runner(void *arg)
+void *lock_trfunc(void *varg)
 {
-	struct lflist_head *head = (struct lflist_head *)arg;
-	int i;
+	BENCH_DECOMPOSE_ARGS(varg);
+	insert_phase_foreach(i)
+	{
+		insert(head, &nodes[i]);
+	}
+	find_phase_foreach(i)
+	{
+		find(head, &nodes[i]);
+	}
+	delete_phase_foreach(i)
+	{
+		if (del(head, &nodes[i])) {
+			/* We don't really have to do this because we could just free() it
+			 * here, but the benchmark checks for correctness by popping from
+			 * this.
+			 */
+			retire_push(head_ret, &nodes[i]);
+		}
+	}
 
-#define LEN (16000)
-	struct integer_entry *es = malloc(sizeof(*es) * LEN);
-
-	for (i = 0; i < LEN; ++i) {
-		es[i].x = i;
-		insert(head, &es[i].integers);
-		del(head, &es[i].integers);
+	all_phase_foreach(i)
+	{
+		insert(head, &nodes[i]);
+		find(head, &nodes[i]);
+		if (del(head, &nodes[i])) {
+			retire_push(head_ret, &nodes[i]);
+		}
+	}
+	finish_find_phase_foreach()
+	{
+		find(head, &nodes[rops]);
+	}
+	finish_insdel_phase_foreach(i)
+	{
+		insert(head, &nodes[i]);
+		if (del(head, &nodes[i])) {
+			retire_push(head_ret, &nodes[i]);
+		}
 	}
 	pthread_exit(NULL);
-#undef LEN
 }
 
-int main(void)
+void lock_cleanup(thr_arg_t *arg)
 {
-	lflist_head_t head;
-	head.next = &head;
-	char buf[128];
-#define NTS (8)
-	pthread_t tids[NTS];
-
-	struct pf_hw_timer timer;
-
-	pf_hw_timer_start(&timer);
-	for (int i = 0; i < NTS; ++i) {
-		pthread_create(&tids[i], NULL, pthread_runner, &head);
-	}
-
-	for (int i = 0; i < NTS; ++i) {
-		pthread_join(tids[i], NULL);
-	}
-	pf_hw_timer_end(&timer, PF_TSC_FREQ_HZ_INTEL_12700K);
-
-	_integer_list_print(&head);
-
-	pf_timer_pretty_time(&timer.duration, PF_HW_TIMER_US, 2, buf, 128);
-
-	printf("%s\n", buf);
-
-	return 0;
+	(void)arg;
+	return;
 }

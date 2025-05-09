@@ -45,13 +45,21 @@ to safely reclaim memory and avoid the ABA problem. Michael showed how the tag
 could be removed if hazard pointers are used.
 
 ## Thoughts
-Before I make a decision between the Zhang or Michael-Harris list I'd like to
+~~Before I make a decision between the Zhang or Michael-Harris list I'd like to
 add hazard pointers to the Zhang implementation and run some better
-benchmarks. My use case will be a very read heavy list (~80%+) and I don't
-even benchmark the lists with reads.
+benchmarks. My use case will be a very read heavy list (\~80%+) and I don't
+even benchmark the lists with reads.~~
 
-If the benchmarks are pretty close I will probably go with Zhang's for 3 reasons:
-1. It is very easy to reason about.
-2. The pointers can be safe by default (no oops I forgot to unmark() this pointer).
-3. The retired nodes list will require an extra retired_next member anyway. This
-   can act as the state field when the node is still valid.
+~~If the benchmarks are pretty close I will probably go with Zhang's for 3 reasons:~~
+1. ~~It is very easy to reason about.~~
+2. ~~The pointers can be safe by default (no oops I forgot to unmark() this pointer).~~
+3. ~~The retired nodes list will require an extra retired_next member anyway. This
+   can act as the state field when the node is still valid.~~
+
+It turns out Zhang's algorithm is not compatible with hazard pointers and requires
+a garbage collector :(. I incorrectly implemented it in the benchmark just to
+get results.
+
+This occurs because Zhang's algorithm allows INV nodes to be reinserted back into
+the list if two adjacent nodes are removed. The algorithm *could* work with
+hazard pointers but you'd have to handle duplicate nodes in the retire list.
